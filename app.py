@@ -7,6 +7,7 @@ import yfinance as yf
 import requests
 import logging
 from io import StringIO
+import time # We need this for the retry logic
 
 # --- CONFIGURATION ---
 try:
@@ -18,10 +19,10 @@ except (KeyError, FileNotFoundError):
     TELEGRAM_CHAT_ID = None
 
 # --- CONSTANTS ---
-NEWS_RSS_URL = "https://www.moneycontrol.com/rss/business.xml"
+# <<< --- FIX #1: SWITCHING TO A MORE RELIABLE NEWS SOURCE (LIVEMINT) --- >>>
+NEWS_RSS_URL = "https://www.livemint.com/rss/topnews"
 STOCK_LIST_CSV = "nifty500_stocks.csv"
 
-# <<< --- These keys MUST match the values in the 'Industry' column of the CORRECT CSV file --- >>>
 SECTOR_KEYWORDS = {
     'AUTOMOBILE & AUTO COMPONENTS': ['auto', 'maruti', 'mahindra', 'tata motors', 'hero', 'bajaj', 'ev'],
     'PHARMA & HEALTHCARE': ['pharma', 'health', 'cipla', 'sun pharma', 'lupin', 'dr reddy', 'healthcare'],
@@ -33,36 +34,47 @@ SECTOR_KEYWORDS = {
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ========= DATA LOADING & ANALYSIS FUNCTIONS =========
+# ========= DATA LOADING & ANALYSIS FUNCTIONS (WITH FIXES) =========
 
 @st.cache_data(ttl=3600)
 def fetch_news_from_rss(url):
-    """Fetches news headlines from an RSS feed robustly."""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        xml_content = StringIO(response.text)
-        df = pd.read_xml(xml_content)
-        if 'title' in df.columns and 'link' in df.columns:
-            return df[['title', 'link']].head(15)
-    except Exception as e:
-        st.error(f"Failed to fetch or parse news feed: {e}")
-    return pd.DataFrame()
+    """Fetches news robustly with retry logic."""
+    # <<< --- FIX #1 (Continued): ADDING RETRY LOGIC FOR NETWORK ERRORS --- >>>
+    for attempt in range(2): # Try twice
+        try:
+            logging.info(f"Fetching news from {url} (Attempt {attempt + 1})")
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status() # Raise an error for bad responses (like 502)
+            
+            xml_content = StringIO(response.text)
+            df = pd.read_xml(xml_content)
+            
+            if 'title' in df.columns and 'link' in df.columns:
+                return df[['title', 'link']].head(15)
+            else:
+                st.error("RSS feed is valid but is missing 'title' or 'link' columns.")
+                return pd.DataFrame() # Return empty df on parsing error
+        except requests.exceptions.RequestException as e:
+            st.error(f"Failed to fetch news (Attempt {attempt + 1}): {e}")
+            time.sleep(2) # Wait 2 seconds before retrying
+    
+    st.error("Could not fetch news after multiple attempts. The source might be down.")
+    return pd.DataFrame() # Return empty if all attempts fail
 
+# <<< --- FIX #2: RE-ENABLING THE STOCK ANALYSIS FUNCTION --- >>>
 @st.cache_data
 def load_nse_stocks():
     """Loads NSE stock list from the CORRECT constituents CSV file."""
     try:
         df = pd.read_csv(STOCK_LIST_CSV)
         
-        # <<< --- These are the correct column names from the correct file --- >>>
         stock_column = 'Symbol' 
         industry_column = 'Industry'
 
         if stock_column not in df.columns or industry_column not in df.columns:
             st.error(f"CRITICAL ERROR: Your CSV file is missing '{stock_column}' or '{industry_column}'.")
-            st.info(f"👉 **FIX:** Please re-download the NIFTY 500 CONSTITUENTS list from the correct NSE page. The columns found in your file are: {list(df.columns)}")
+            st.info(f"👉 **FIX:** You have the wrong CSV file. Please follow the instructions to download the NIFTY 500 CONSTITUENTS list. The columns found in your file are: {list(df.columns)}")
             return {}
         
         df[industry_column] = df[industry_column].str.upper().str.strip()
@@ -76,17 +88,16 @@ def load_nse_stocks():
         st.error(f"An unexpected error occurred while loading the stock CSV: {e}")
         return {}
 
+# (All other functions below are correct and remain the same)
 def analyze_sentiment(text):
     analysis = TextBlob(text)
     polarity = analysis.sentiment.polarity
-    label = 'POSITIVE' if polarity > 0.1 else 'NEGATIVE' if polarity < -0.1 else 'NEUTRAL'
-    return label, polarity
+    return 'POSITIVE' if polarity > 0.1 else 'NEGATIVE' if polarity < -0.1 else 'NEUTRAL', polarity
 
 def map_headline_to_sector(headline):
     headline_lower = headline.lower()
     for sector, keywords in SECTOR_KEYWORDS.items():
-        if any(keyword in headline_lower for keyword in keywords):
-            return sector.upper()
+        if any(keyword in headline_lower for keyword in keywords): return sector.upper()
     return None
 
 @st.cache_data(ttl=86400)
@@ -95,10 +106,8 @@ def analyze_stock_performance(symbol):
         stock_data = yf.download(f"{symbol}.NS", period="6mo", progress=False)
         if stock_data.empty: return None
         stock_data['daily_return'] = stock_data['Close'].pct_change()
-        avg_return = stock_data['daily_return'].mean()
-        return {'symbol': symbol, 'avg_return': avg_return}
-    except Exception:
-        return None
+        return {'symbol': symbol, 'avg_return': stock_data['daily_return'].mean()}
+    except Exception: return None
         
 def format_telegram_message(headline_info, recommendations):
     headline, sentiment, score, sector = headline_info.values()
@@ -106,9 +115,7 @@ def format_telegram_message(headline_info, recommendations):
     message += "📈 *Top BUY Recommendations:*\n" if sentiment == 'POSITIVE' else "📉 *Top AVOID Recommendations:*\n"
     if not recommendations: message += "_No stocks met the filter criteria._"
     else:
-        for stock in recommendations:
-            avg_ret_pct = stock['avg_return'] * 100
-            message += f"  - *{stock['symbol']}* (Avg Daily Return: {avg_ret_pct:.3f}%)\n"
+        for stock in recommendations: message += f"  - *{stock['symbol']}* (Avg Daily Return: {stock['avg_return'] * 100:.3f}%)\n"
     return message
 
 def send_telegram_message(message):
@@ -124,18 +131,15 @@ def send_telegram_message(message):
 # ========= STREAMLIT UI =========
 st.set_page_config(page_title="AI Market Advisor", layout="wide")
 st.title("📈 AI Market Advisor – News & Stock Picks")
-
 st.sidebar.header("Controls")
-if st.sidebar.button("🔄 Clear Cache and Rerun"):
-    st.cache_data.clear()
-    st.rerun()
+if st.sidebar.button("🔄 Clear Cache and Rerun"): st.cache_data.clear(); st.rerun()
 st.sidebar.warning("**Disclaimer:** This is for educational purposes. Not financial advice.")
 
 sector_stocks_map = load_nse_stocks()
 news_df = fetch_news_from_rss(NEWS_RSS_URL)
 
 st.header("📰 Latest Business Headlines")
-if news_df.empty: st.warning("Could not display news.")
+if news_df.empty: st.warning("Could not display news. Please check for error messages.")
 else: st.dataframe(news_df, use_container_width=True, hide_index=True)
 
 st.header("💬 Sentiment Analysis & Stock Suggestions")
@@ -143,7 +147,7 @@ if news_df.empty or not sector_stocks_map:
     st.warning("Analysis cannot run. Please resolve any data loading errors shown above.")
 else:
     for index, row in news_df.iterrows():
-        headline, sentiment, score = row['title'], *analyze_sentiment(row['title'])
+        headline, (sentiment, score) = row['title'], analyze_sentiment(row['title'])
         if sentiment != 'NEUTRAL':
             mapped_sector = map_headline_to_sector(headline)
             if mapped_sector:
@@ -155,8 +159,7 @@ else:
                         continue
                     with st.spinner(f"Analyzing {len(stocks_in_sector)} stocks..."):
                         valid_stocks = [s for s in [analyze_stock_performance(s) for s in stocks_in_sector] if s is not None]
-                    if sentiment == 'POSITIVE': recommendations = sorted([s for s in valid_stocks if s['avg_return'] > 0.001], key=lambda x: x['avg_return'], reverse=True)
-                    else: recommendations = sorted([s for s in valid_stocks if s['avg_return'] < -0.001], key=lambda x: x['avg_return'])
+                    recommendations = sorted([s for s in valid_stocks if s['avg_return'] > (0.001 if sentiment == 'POSITIVE' else -float('inf')) and s['avg_return'] < (-0.001 if sentiment == 'NEGATIVE' else float('inf'))], key=lambda x: x['avg_return'], reverse=(sentiment == 'POSITIVE'))
                     if recommendations:
                         st.write("**Top Recommendations:**")
                         rec_df = pd.DataFrame(recommendations[:3])
