@@ -11,17 +11,15 @@ st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
 # 1. Fetch NSE stock symbols (fixed parsing)
 @st.cache_data(ttl=86400)
 def get_all_nse_stocks():
-    url = "https://www1.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(url, headers=headers)
-        response.encoding = "utf-8"
-        df = pd.read_csv(io.StringIO(response.text), on_bad_lines='skip')
+        url = "https://raw.githubusercontent.com/knadh/nsepy/master/nsepy/data/symbols.csv"
+        df = pd.read_csv(url)
         symbols = df["SYMBOL"].dropna().unique().tolist()
         return [s + ".NS" for s in symbols]
     except Exception as e:
         st.error(f"❌ Could not fetch NSE stock list: {e}")
         return []
+
 
 # 2. Fetch latest finance news headlines
 @st.cache_data(ttl=3600)
