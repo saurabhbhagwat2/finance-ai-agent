@@ -2,27 +2,28 @@ import streamlit as st
 import requests
 import pandas as pd
 import yfinance as yf
-from transformers import pipeline
+from textblob import TextBlob
 import io
 
 st.set_page_config(layout="wide")
 st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
 
-# 1. Fetch NSE stock symbols (fixed version)
+# 1. Fetch NSE stock symbols (fixed parsing)
 @st.cache_data(ttl=86400)
 def get_all_nse_stocks():
     url = "https://www1.nseindia.com/content/equities/EQUITY_L.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
-        df = pd.read_csv(io.StringIO(response.text), on_bad_lines='skip')  # ✅ skip malformed rows
+        response.encoding = "utf-8"
+        df = pd.read_csv(io.StringIO(response.text), on_bad_lines='skip')
         symbols = df["SYMBOL"].dropna().unique().tolist()
         return [s + ".NS" for s in symbols]
     except Exception as e:
         st.error(f"❌ Could not fetch NSE stock list: {e}")
         return []
 
-# 2. Fetch latest finance news headlines from alternate RSS
+# 2. Fetch latest finance news headlines
 @st.cache_data(ttl=3600)
 def get_news():
     try:
@@ -46,6 +47,11 @@ def backtest_symbol(sym):
     except:
         return None
 
+# 4. Sentiment using TextBlob (no torch)
+def analyze_sentiment(text):
+    blob = TextBlob(text)
+    return "POSITIVE" if blob.sentiment.polarity > 0 else "NEGATIVE"
+
 # Load data
 symbols = get_all_nse_stocks()
 news = get_news()
@@ -61,12 +67,11 @@ else:
 # Sentiment analysis
 st.subheader("💬 Sentiment Analysis (Top 10 Headlines)")
 if news:
-    sentiment = pipeline("sentiment-analysis")
-    results = sentiment(news[:10])
-    sent_df = pd.DataFrame(results)
-    sent_df["headline"] = news[:10]
+    sent_df = pd.DataFrame(news[:10], columns=["headline"])
+    sent_df["label"] = sent_df["headline"].apply(analyze_sentiment)
+    sent_df["score"] = sent_df["headline"].apply(lambda x: round(TextBlob(x).sentiment.polarity, 2))
 else:
-    sent_df = pd.DataFrame(columns=["label", "score", "headline"])
+    sent_df = pd.DataFrame(columns=["headline", "label", "score"])
 
 st.dataframe(sent_df)
 
