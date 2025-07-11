@@ -15,8 +15,7 @@ def get_all_nse_stocks():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
-        response.encoding = "utf-8"
-        df = pd.read_csv(io.StringIO(response.text))
+        df = pd.read_csv(io.StringIO(response.text), on_bad_lines='skip')  # ✅ skip malformed rows
         symbols = df["SYMBOL"].dropna().unique().tolist()
         return [s + ".NS" for s in symbols]
     except Exception as e:
