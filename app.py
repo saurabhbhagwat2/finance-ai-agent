@@ -3,24 +3,20 @@ import requests
 import pandas as pd
 import yfinance as yf
 from textblob import TextBlob
-import io
 
 st.set_page_config(layout="wide")
 st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
 
-# 1. Fetch NSE stock symbols (fixed parsing)
-import requests
-
-def get_nifty_500():
+# 1. Fetch NSE stock symbols from NIFTY 500 JSON API
+@st.cache_data(ttl=86400)
+def get_nse_symbols():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
     headers = {"User-Agent": "Mozilla/5.0"}
     session = requests.Session()
-    session.get("https://www.nseindia.com", headers=headers)  # get cookies
+    session.get("https://www.nseindia.com", headers=headers)  # Get cookies
     res = session.get(url, headers=headers)
     data = res.json()
     return [item["symbol"] + ".NS" for item in data["data"]]
-
-
 
 # 2. Fetch latest finance news headlines
 @st.cache_data(ttl=3600)
@@ -34,7 +30,7 @@ def get_news():
         st.error(f"❌ Failed to fetch or parse news: {e}")
         return []
 
-# 3. Backtest logic
+# 3. Backtest logic (1-day forward return)
 @st.cache_data
 def backtest_symbol(sym):
     try:
@@ -46,24 +42,24 @@ def backtest_symbol(sym):
     except:
         return None
 
-# 4. Sentiment using TextBlob (no torch)
+# 4. Sentiment using TextBlob
 def analyze_sentiment(text):
     blob = TextBlob(text)
     return "POSITIVE" if blob.sentiment.polarity > 0 else "NEGATIVE"
 
-# Load data
-symbols = get_all_nse_stocks()
+# Load NSE symbols and News
+symbols = get_nse_symbols()
 news = get_news()
 st.subheader("📰 Latest Headlines")
 
-# Display news
+# Display headlines
 if news:
     for i, headline in enumerate(news[:5]):
         st.write(f"**{i+1}.** {headline}")
 else:
     st.warning("No news available right now.")
 
-# Sentiment analysis
+# Perform sentiment analysis
 st.subheader("💬 Sentiment Analysis (Top 10 Headlines)")
 if news:
     sent_df = pd.DataFrame(news[:10], columns=["headline"])
@@ -74,7 +70,7 @@ else:
 
 st.dataframe(sent_df)
 
-# Map sectors
+# Map headlines to sectors
 sector_map = {
     "oil": "Energy",
     "bank": "Banking",
@@ -87,7 +83,7 @@ sent_df["sector"] = sent_df["headline"].str.lower().apply(
     lambda x: next((sector_map[k] for k in sector_map if k in x), "General")
 )
 
-# Buy / Avoid logic
+# Generate Buy / Avoid lists
 st.subheader("📌 Buy / Avoid Suggestions")
 buy, avoid = [], []
 
@@ -96,7 +92,7 @@ if not sent_df.empty:
         label = row["label"]
         if label not in ["POSITIVE", "NEGATIVE"]:
             continue
-        for sym in symbols[:100]:
+        for sym in symbols[:100]:  # limit to 100 for performance
             stats = backtest_symbol(sym)
             if not stats:
                 continue
