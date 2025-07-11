@@ -4,12 +4,11 @@ import pandas as pd
 import yfinance as yf
 from textblob import TextBlob
 import xml.etree.ElementTree as ET
-import io
 
 st.set_page_config(layout="wide")
-st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
+st.title("📈 AI Market Advisor – NSE Stocks (Global News Powered)")
 
-# 1. Get NIFTY 500 symbols
+# 1. Get NIFTY 500 symbols from NSE (JSON API)
 @st.cache_data(ttl=86400)
 def get_nse_symbols():
     try:
@@ -24,21 +23,21 @@ def get_nse_symbols():
         st.error(f"❌ Could not fetch NSE stock list: {e}")
         return []
 
-# 2. Get news from RSS feed (clean XML)
+# 2. Get Global Business News from Reuters
 @st.cache_data(ttl=3600)
 def get_news():
     try:
-        rss_url = "https://zeenews.india.com/rss/business.xml"
-        response = requests.get(rss_url, timeout=10)
-        raw = response.content.decode("utf-8").lstrip()  # strip whitespace
-        xml_tree = ET.ElementTree(ET.fromstring(raw))
-        items = xml_tree.findall(".//item/title")
-        return [item.text for item in items if item is not None]
+        url = "http://feeds.reuters.com/reuters/businessNews"
+        response = requests.get(url, timeout=10)
+        xml_text = response.content.decode("utf-8").lstrip()
+        root = ET.fromstring(xml_text)
+        titles = [item.find("title").text for item in root.findall(".//item") if item.find("title") is not None]
+        return titles
     except Exception as e:
         st.error(f"❌ Failed to fetch or parse news: {e}")
         return []
 
-# 3. Backtest
+# 3. Backtesting logic using yfinance
 @st.cache_data
 def backtest_symbol(sym):
     try:
@@ -50,23 +49,23 @@ def backtest_symbol(sym):
     except:
         return None
 
-# 4. TextBlob sentiment
+# 4. Sentiment using TextBlob
 def analyze_sentiment(text):
     blob = TextBlob(text)
     return "POSITIVE" if blob.sentiment.polarity > 0 else "NEGATIVE"
 
-# Load data
+# Load NSE symbols and News
 symbols = get_nse_symbols()
 news = get_news()
 
-st.subheader("📰 Latest Headlines")
+st.subheader("📰 Latest Global Business Headlines")
 if news:
     for i, headline in enumerate(news[:5]):
         st.write(f"**{i+1}.** {headline}")
 else:
     st.warning("No news available right now.")
 
-# Sentiment
+# Sentiment analysis
 st.subheader("💬 Sentiment Analysis (Top 10 Headlines)")
 if news:
     sent_df = pd.DataFrame(news[:10], columns=["headline"])
@@ -90,7 +89,7 @@ sent_df["sector"] = sent_df["headline"].str.lower().apply(
     lambda x: next((sector_map[k] for k in sector_map if k in x), "General")
 )
 
-# Buy / Avoid Logic
+# Buy / Avoid Suggestions
 st.subheader("📌 Buy / Avoid Suggestions")
 buy, avoid = [], []
 
@@ -99,7 +98,7 @@ if not sent_df.empty:
         label = row["label"]
         if label not in ["POSITIVE", "NEGATIVE"]:
             continue
-        for sym in symbols[:100]:
+        for sym in symbols[:100]:  # limit to 100 stocks
             stats = backtest_symbol(sym)
             if not stats:
                 continue
