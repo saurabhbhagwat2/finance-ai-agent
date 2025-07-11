@@ -3,41 +3,39 @@ import requests
 import pandas as pd
 import yfinance as yf
 from transformers import pipeline
+import io
 
 st.set_page_config(layout="wide")
 st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
 
-# 1. Fetch NSE stock symbols daily
+# 1. Fetch NSE stock symbols (fixed version)
 @st.cache_data(ttl=86400)
 def get_all_nse_stocks():
     url = "https://www1.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        df = pd.read_csv(url, usecols=["SYMBOL"], storage_options={"headers": headers})
+        response = requests.get(url, headers=headers)
+        response.encoding = "utf-8"
+        df = pd.read_csv(io.StringIO(response.text))
         symbols = df["SYMBOL"].dropna().unique().tolist()
         return [s + ".NS" for s in symbols]
     except Exception as e:
         st.error(f"❌ Could not fetch NSE stock list: {e}")
         return []
 
-# 2. Fetch latest headlines from Moneycontrol RSS
+# 2. Fetch latest finance news headlines from alternate RSS
 @st.cache_data(ttl=3600)
 def get_news():
     try:
-        rss_url = "https://api.allorigins.win/raw?url=https://www.moneycontrol.com/rss/market-news/"
+        rss_url = "https://zeenews.india.com/rss/business.xml"
         response = requests.get(rss_url, timeout=10)
-        if response.status_code != 200:
-            return []
-
         df = pd.read_xml(response.content, xpath="//item")
         return df["title"].dropna().tolist()
     except Exception as e:
         st.error(f"❌ Failed to fetch or parse news: {e}")
         return []
 
-# 3. Perform backtest
+# 3. Backtest logic
 @st.cache_data
 def backtest_symbol(sym):
     try:
@@ -49,19 +47,19 @@ def backtest_symbol(sym):
     except:
         return None
 
-# 📥 Load everything
+# Load data
 symbols = get_all_nse_stocks()
 news = get_news()
 st.subheader("📰 Latest Headlines")
 
-# 📰 Show top 5 news
+# Display news
 if news:
     for i, headline in enumerate(news[:5]):
         st.write(f"**{i+1}.** {headline}")
 else:
     st.warning("No news available right now.")
 
-# 🔍 Sentiment analysis
+# Sentiment analysis
 st.subheader("💬 Sentiment Analysis (Top 10 Headlines)")
 if news:
     sentiment = pipeline("sentiment-analysis")
@@ -73,7 +71,7 @@ else:
 
 st.dataframe(sent_df)
 
-# 🔗 Sector map
+# Map sectors
 sector_map = {
     "oil": "Energy",
     "bank": "Banking",
@@ -86,7 +84,7 @@ sent_df["sector"] = sent_df["headline"].str.lower().apply(
     lambda x: next((sector_map[k] for k in sector_map if k in x), "General")
 )
 
-# 📊 Buy / Avoid Suggestions
+# Buy / Avoid logic
 st.subheader("📌 Buy / Avoid Suggestions")
 buy, avoid = [], []
 
@@ -95,7 +93,7 @@ if not sent_df.empty:
         label = row["label"]
         if label not in ["POSITIVE", "NEGATIVE"]:
             continue
-        for sym in symbols[:100]:  # limit to 100 for speed
+        for sym in symbols[:100]:
             stats = backtest_symbol(sym)
             if not stats:
                 continue
@@ -105,7 +103,6 @@ if not sent_df.empty:
             elif label == "NEGATIVE" and avg_ret < -0.001:
                 avoid.append((sym, avg_ret, std_dev))
 
-    # Display tables
     st.markdown("### ✅ Buy Candidates")
     if buy:
         buy_df = pd.DataFrame(buy, columns=["Symbol", "Avg Return", "Std Dev"])
