@@ -5,3 +5,4 @@ yfinance
 transformers
 lxml
 torch
+textblob
