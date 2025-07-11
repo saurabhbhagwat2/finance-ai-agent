@@ -41,7 +41,7 @@ sector_map = {
 sent_df["sector"] = sent_df["headline"].str.lower().apply(lambda x: next((sector_map[k] for k in sector_map if k in x), "General"))
 
 # 4. Load NSE 500 list (CSV)
-@st.cache
+@st.cache_data
 def load_nse500():
     url = "https://raw.githubusercontent.com/zeetill/nse500/master/500.csv"
     df = pd.read_csv(url)
@@ -51,7 +51,7 @@ symbols = load_nse500()["SYMBOL"].unique().tolist()
 st.markdown(f"Loaded {len(symbols)} NSE symbols")
 
 # 5. Backtest function – calculate +1 day return avg/std
-@st.cache(suppress_st_warning=True)
+@st.cache_data(suppress_st_warning=True)
 def backtest_symbol(sym):
     try:
         df = yf.download(sym + ".NS", period="6mo", progress=False)
