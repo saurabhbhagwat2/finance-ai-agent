@@ -9,7 +9,7 @@ st.set_page_config(layout="wide")
 st.title("AI Market Advisor – NSE Stocks (Free Version)")
 
 # 1. Fetch latest finance news headlines (via free RSS)
-@st.cache_data(allow_output_mutation=True)
+@st.cache_data()
 def get_news():
     feed = requests.get("https://api.allorigins.win/raw?url=https://www.moneycontrol.com/rss/market-news/").text
     df = pd.read_xml(feed, xpath="//item/title")
