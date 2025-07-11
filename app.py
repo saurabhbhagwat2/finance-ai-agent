@@ -7,7 +7,7 @@ import yfinance as yf
 import requests
 import logging
 from io import StringIO
-import time # We need this for the retry logic
+import time
 
 # --- CONFIGURATION ---
 try:
@@ -19,7 +19,7 @@ except (KeyError, FileNotFoundError):
     TELEGRAM_CHAT_ID = None
 
 # --- CONSTANTS ---
-# <<< --- FIX #1: SWITCHING TO A MORE RELIABLE NEWS SOURCE (LIVEMINT) --- >>>
+# <<< --- THE FINAL FIX: SWITCHING TO A MORE RELIABLE NEWS SOURCE --- >>>
 NEWS_RSS_URL = "https://www.livemint.com/rss/topnews"
 STOCK_LIST_CSV = "nifty500_stocks.csv"
 
@@ -34,65 +34,60 @@ SECTOR_KEYWORDS = {
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ========= DATA LOADING & ANALYSIS FUNCTIONS (WITH FIXES) =========
+# ========= DATA LOADING & ANALYSIS FUNCTIONS =========
 
 @st.cache_data(ttl=3600)
 def fetch_news_from_rss(url):
     """Fetches news robustly with retry logic."""
-    # <<< --- FIX #1 (Continued): ADDING RETRY LOGIC FOR NETWORK ERRORS --- >>>
     for attempt in range(2): # Try twice
         try:
             logging.info(f"Fetching news from {url} (Attempt {attempt + 1})")
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
             response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status() # Raise an error for bad responses (like 502)
+            response.raise_for_status()
             
             xml_content = StringIO(response.text)
             df = pd.read_xml(xml_content)
             
             if 'title' in df.columns and 'link' in df.columns:
+                st.success("Successfully fetched latest news.")
                 return df[['title', 'link']].head(15)
-            else:
-                st.error("RSS feed is valid but is missing 'title' or 'link' columns.")
-                return pd.DataFrame() # Return empty df on parsing error
         except requests.exceptions.RequestException as e:
-            st.error(f"Failed to fetch news (Attempt {attempt + 1}): {e}")
-            time.sleep(2) # Wait 2 seconds before retrying
+            logging.error(f"Failed to fetch news (Attempt {attempt + 1}): {e}")
+            time.sleep(2)
     
     st.error("Could not fetch news after multiple attempts. The source might be down.")
-    return pd.DataFrame() # Return empty if all attempts fail
+    return pd.DataFrame()
 
-# <<< --- FIX #2: RE-ENABLING THE STOCK ANALYSIS FUNCTION --- >>>
 @st.cache_data
 def load_nse_stocks():
     """Loads NSE stock list from the CORRECT constituents CSV file."""
     try:
         df = pd.read_csv(STOCK_LIST_CSV)
-        
-        stock_column = 'Symbol' 
-        industry_column = 'Industry'
+        stock_column, industry_column = 'Symbol', 'Industry'
 
         if stock_column not in df.columns or industry_column not in df.columns:
             st.error(f"CRITICAL ERROR: Your CSV file is missing '{stock_column}' or '{industry_column}'.")
-            st.info(f"👉 **FIX:** You have the wrong CSV file. Please follow the instructions to download the NIFTY 500 CONSTITUENTS list. The columns found in your file are: {list(df.columns)}")
+            st.info(f"👉 **FIX:** Please ensure you have the correct NIFTY 500 CONSTITUENTS list from the NSE page.")
+            st.code(f"Columns found in your file: {list(df.columns)}")
             return {}
         
         df[industry_column] = df[industry_column].str.upper().str.strip()
         sector_stocks = df.groupby(industry_column)[stock_column].apply(list).to_dict()
+        st.success("Successfully loaded and parsed the stock list.")
         return sector_stocks
         
     except FileNotFoundError:
-        st.error(f"CRITICAL ERROR: Stock list file `{STOCK_LIST_CSV}` not found. Please make sure you have uploaded the correct file to GitHub.")
+        st.error(f"CRITICAL ERROR: Stock list file `{STOCK_LIST_CSV}` not found. Please ensure it's uploaded to GitHub.")
         return {}
     except Exception as e:
         st.error(f"An unexpected error occurred while loading the stock CSV: {e}")
         return {}
 
-# (All other functions below are correct and remain the same)
+# (All other functions below are correct and do not need changes)
 def analyze_sentiment(text):
     analysis = TextBlob(text)
-    polarity = analysis.sentiment.polarity
-    return 'POSITIVE' if polarity > 0.1 else 'NEGATIVE' if polarity < -0.1 else 'NEUTRAL', polarity
+    return 'POSITIVE' if analysis.sentiment.polarity > 0.1 else 'NEGATIVE' if analysis.sentiment.polarity < -0.1 else 'NEUTRAL', analysis.sentiment.polarity
 
 def map_headline_to_sector(headline):
     headline_lower = headline.lower()
@@ -105,8 +100,7 @@ def analyze_stock_performance(symbol):
     try:
         stock_data = yf.download(f"{symbol}.NS", period="6mo", progress=False)
         if stock_data.empty: return None
-        stock_data['daily_return'] = stock_data['Close'].pct_change()
-        return {'symbol': symbol, 'avg_return': stock_data['daily_return'].mean()}
+        return {'symbol': symbol, 'avg_return': stock_data['Close'].pct_change().mean()}
     except Exception: return None
         
 def format_telegram_message(headline_info, recommendations):
@@ -144,7 +138,7 @@ else: st.dataframe(news_df, use_container_width=True, hide_index=True)
 
 st.header("💬 Sentiment Analysis & Stock Suggestions")
 if news_df.empty or not sector_stocks_map:
-    st.warning("Analysis cannot run. Please resolve any data loading errors shown above.")
+    st.warning("Analysis cannot run until all data loading issues are resolved.")
 else:
     for index, row in news_df.iterrows():
         headline, (sentiment, score) = row['title'], analyze_sentiment(row['title'])
@@ -155,11 +149,11 @@ else:
                     st.markdown(f"**Sector:** `{mapped_sector}` | **Sentiment Score:** `{score:.2f}`")
                     stocks_in_sector = sector_stocks_map.get(mapped_sector, [])
                     if not stocks_in_sector:
-                        st.warning(f"No stocks found for '{mapped_sector}'.")
+                        st.warning(f"No stocks found for '{mapped_sector}'. Check if the sector name exists in your CSV's 'Industry' column.")
                         continue
                     with st.spinner(f"Analyzing {len(stocks_in_sector)} stocks..."):
                         valid_stocks = [s for s in [analyze_stock_performance(s) for s in stocks_in_sector] if s is not None]
-                    recommendations = sorted([s for s in valid_stocks if s['avg_return'] > (0.001 if sentiment == 'POSITIVE' else -float('inf')) and s['avg_return'] < (-0.001 if sentiment == 'NEGATIVE' else float('inf'))], key=lambda x: x['avg_return'], reverse=(sentiment == 'POSITIVE'))
+                    recommendations = sorted([s for s in valid_stocks if (s['avg_return'] > 0.001 if sentiment == 'POSITIVE' else s['avg_return'] < -0.001)], key=lambda x: x['avg_return'], reverse=(sentiment == 'POSITIVE'))
                     if recommendations:
                         st.write("**Top Recommendations:**")
                         rec_df = pd.DataFrame(recommendations[:3])
