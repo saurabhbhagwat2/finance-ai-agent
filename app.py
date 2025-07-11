@@ -12,12 +12,10 @@ from io import StringIO # Needed for the news fix
 try:
     TELEGRAM_TOKEN = st.secrets["telegram"]["token"]
     TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
-except KeyError:
-    # This allows the app to run locally without secrets for testing
-    st.info("Telegram credentials not found in secrets. Alerts will be disabled.")
+except (KeyError, FileNotFoundError):
+    st.info("Telegram credentials not found. Alerts will be disabled.")
     TELEGRAM_TOKEN = None
     TELEGRAM_CHAT_ID = None
-
 
 # --- CONSTANTS ---
 NEWS_RSS_URL = "https://www.moneycontrol.com/rss/business.xml"
@@ -35,74 +33,71 @@ SECTOR_KEYWORDS = {
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ========= CACHED DATA LOADING FUNCTIONS =========
+# ========= CACHED DATA LOADING FUNCTIONS (WITH FIXES) =========
 
-# --- FIX 2: More robust news fetching ---
+# --- FIX #2: More robust news fetching ---
 @st.cache_data(ttl=3600) # Cache for 1 hour
 def fetch_news_from_rss(url):
     """Fetches news headlines from an RSS feed robustly and caches the result."""
     try:
         logging.info("Fetching fresh news from RSS feed.")
-        # Use requests to handle potential network issues better
-        headers = {'User-Agent': 'Mozilla/5.0'} # Act like a browser
+        # Use requests to act like a browser, which is more reliable
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
         response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+        response.raise_for_status() # This will raise an error for bad responses (like 404, 503)
 
-        # Use StringIO to treat the string content as a file for pandas
+        # Use StringIO to read the text content as if it were a file
         xml_content = StringIO(response.text)
-        
         df = pd.read_xml(xml_content)
         
         if 'title' in df.columns and 'link' in df.columns:
             return df[['title', 'link']].head(15)
         else:
-            st.error("RSS feed is valid but does not contain 'title' or 'link' columns.")
+            st.error("RSS feed is valid but is missing 'title' or 'link' columns.")
             return pd.DataFrame()
             
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to fetch news (network error): {e}")
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Failed to parse news feed: {e}")
+        st.error(f"Failed to parse the news feed. The format might have changed. Error: {e}")
         return pd.DataFrame()
 
-# --- FIX 1: More robust stock list loading ---
+# --- FIX #1: More robust stock list loading ---
 @st.cache_data
 def load_nse_stocks():
     """Loads NSE stock list from CSV and handles potential column name errors."""
     try:
         df = pd.read_csv(STOCK_LIST_CSV)
         
-        # --- This is the key change ---
-        # We will check for the 'Symbol' column and provide a helpful error if it's not there.
-        # The NSE CSV file usually has 'Symbol' (with a capital S).
+        # Define expected column names (NSE often uses 'Symbol' with a capital S)
         stock_column = 'Symbol' 
         industry_column = 'Industry'
 
+        # Check if the columns exist before using them
         if stock_column not in df.columns:
             st.error(f"Could not find the stock ticker column '{stock_column}' in your CSV.")
-            st.info(f"Available columns are: {list(df.columns)}")
-            return {} # Return empty to prevent further errors
+            st.info(f"👉 **FIX:** Open your CSV file and find the correct column name for stock tickers. The available columns are: {list(df.columns)}")
+            return {}
         
         if industry_column not in df.columns:
             st.error(f"Could not find the industry column '{industry_column}' in your CSV.")
-            st.info(f"Available columns are: {list(df.columns)}")
+            st.info(f"👉 **FIX:** Open your CSV file and find the correct column name for industries. The available columns are: {list(df.columns)}")
             return {}
 
-        # Standardize industry names to uppercase for reliable matching
-        df[industry_column] = df[industry_column].str.upper()
+        df[industry_column] = df[industry_column].str.upper().str.strip()
         sector_stocks = df.groupby(industry_column)[stock_column].apply(list).to_dict()
         return sector_stocks
         
     except FileNotFoundError:
-        st.error(f"Stock list file not found: {STOCK_LIST_CSV}. Make sure it's in your repo.")
+        st.error(f"Stock list file `{STOCK_LIST_CSV}` not found. Please make sure it's uploaded to your GitHub repository.")
         return {}
     except Exception as e:
-        st.error(f"An unexpected error occurred while loading stocks: {e}")
+        st.error(f"An unexpected error occurred while loading the stock CSV: {e}")
         return {}
 
 
-# (The rest of the functions are the same, no changes needed there)
+# ========= ANALYSIS & HELPER FUNCTIONS (No changes needed here) =========
 
 def analyze_sentiment(text):
     analysis = TextBlob(text)
@@ -163,7 +158,7 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"Exception while sending Telegram message: {e}")
 
-# ========= STREAMLIT UI =========
+# ========= STREAMLIT UI (Slightly reorganized for better flow) =========
 
 st.set_page_config(page_title="AI Market Advisor", layout="wide")
 st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
@@ -183,14 +178,15 @@ news_df = fetch_news_from_rss(NEWS_RSS_URL)
 
 st.header("📰 Latest Headlines")
 if news_df.empty:
-    st.warning("No news available right now or failed to fetch.")
+    st.warning("Could not display news. Please check the error messages above.")
 else:
-    st.dataframe(news_df, use_container_width=True)
+    st.dataframe(news_df, use_container_width=True, hide_index=True)
 
 st.header("💬 Sentiment Analysis & Stock Suggestions")
 if news_df.empty or not sector_stocks_map:
-    st.warning("Analysis cannot run due to missing news or stock data.")
+    st.warning("Analysis cannot run until the data loading issues above are resolved.")
 else:
+    found_suggestions = False
     for index, row in news_df.iterrows():
         headline = row['title']
         sentiment, score = analyze_sentiment(headline)
@@ -199,7 +195,8 @@ else:
             mapped_sector = map_headline_to_sector(headline)
             
             if mapped_sector:
-                sentiment_emoji = "📈" if sentiment == "POSITIVE" else "📉"
+                found_suggestions = True
+                sentiment_emoji = "🟢" if sentiment == "POSITIVE" else "🔴"
                 expander_title = f"{sentiment_emoji} [{sentiment}] {headline}"
 
                 with st.expander(expander_title):
@@ -207,7 +204,7 @@ else:
                     
                     stocks_in_sector = sector_stocks_map.get(mapped_sector, [])
                     if not stocks_in_sector:
-                        st.warning("No stocks found for this sector in the NIFTY 500 list.")
+                        st.warning("No stocks found for this sector. The industry name might be different in your CSV file.")
                         continue
                     
                     with st.spinner(f"Analyzing {len(stocks_in_sector)} stocks in {mapped_sector}..."):
@@ -225,7 +222,7 @@ else:
                     if recommendations:
                         rec_df = pd.DataFrame(recommendations[:3])
                         rec_df['avg_return'] = rec_df['avg_return'].map('{:.3%}'.format)
-                        st.dataframe(rec_df, use_container_width=True)
+                        st.dataframe(rec_df, use_container_width=True, hide_index=True)
                         
                         alert_key = f"send_{index}"
                         if st.button("Send This Alert to Telegram", key=alert_key):
@@ -234,3 +231,5 @@ else:
                             send_telegram_message(message)
                     else:
                         st.info("No stocks in this sector met the filter criteria.")
+    if not found_suggestions:
+        st.info("No headlines matched the keyword filters for sector analysis.")
