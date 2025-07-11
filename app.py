@@ -9,16 +9,17 @@ st.set_page_config(layout="wide")
 st.title("📈 AI Market Advisor – NSE Stocks (Live Version)")
 
 # 1. Fetch NSE stock symbols (fixed parsing)
-@st.cache_data(ttl=86400)
-def get_all_nse_stocks():
-    try:
-        url = "https://raw.githubusercontent.com/knadh/nsepy/master/nsepy/data/symbols.csv"
-        df = pd.read_csv(url)
-        symbols = df["SYMBOL"].dropna().unique().tolist()
-        return [s + ".NS" for s in symbols]
-    except Exception as e:
-        st.error(f"❌ Could not fetch NSE stock list: {e}")
-        return []
+import requests
+
+def get_nifty_500():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    session = requests.Session()
+    session.get("https://www.nseindia.com", headers=headers)  # get cookies
+    res = session.get(url, headers=headers)
+    data = res.json()
+    return [item["symbol"] + ".NS" for item in data["data"]]
+
 
 
 # 2. Fetch latest finance news headlines
