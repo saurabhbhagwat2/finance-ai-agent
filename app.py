@@ -19,7 +19,7 @@ except (KeyError, FileNotFoundError):
     TELEGRAM_CHAT_ID = None
 
 NEWS_RSS_URL = "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en"
-STOCK_LIST_CSV = "nifty500_stocks.csv"
+STOCK_LIST_CSV = "nifty500_stocks_cleaned.csv"
 
 SECTOR_KEYWORDS = {
     'AUTOMOBILE & AUTO COMPONENTS': ['auto', 'maruti', 'mahindra', 'tata motors', 'hero', 'bajaj', 'ev', 'automotive'],
